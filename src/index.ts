@@ -2394,18 +2394,20 @@ Terse command-style prompts produce shallow, generic work.
           workflowId: task.id,
         }),
         onProgress: entries => {
+          // Authoritative bookkeeping, never guarded: this is the run's own
+          // state, and only the observability branch below may fail quietly.
           updateWorkflowProgressBatch(task, entries);
           if (milestones === undefined) return;
-          for (const { entry, milestone } of milestones.fresh(entries)) {
-            // Best-effort by contract: the runtime runs this observer inline
-            // with its own bookkeeping, so a notification channel that throws
-            // must not be able to fail the run it observes.
-            try {
+          // Best-effort by contract: the runtime runs this observer inline with
+          // its own bookkeeping, so nothing in the whole observability branch —
+          // tracker, formatting or the channel — may propagate out of it.
+          try {
+            for (const { entry, milestone } of milestones.fresh(entries)) {
               const notice = workflowNotice(task, entry, milestone);
               ctx.ui.notify(notice.text, notice.level);
-            } catch {
-              /* observability only */
             }
+          } catch {
+            /* observability only */
           }
         },
         // The dialog's pause / skip / retry keys run through this; it is dropped

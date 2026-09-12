@@ -115,9 +115,10 @@ describe("workflow progress on the RPC channel", () => {
       expect.stringMatching(/^implement-review \[wf_\w+\] · Review · ⟳ reviewer · general-purpose · sonnet 4\.6 · thinking: high$/),
     );
     // The settlement keeps the effective effort, which `agentStatSegments`
-    // alone would have dropped.
+    // alone would have dropped. Duration is not asserted: a mocked child can
+    // settle within the same millisecond (omitted) or just past it (appended).
     expect(messages(context)).toContainEqual(
-      expect.stringMatching(/^implement-review \[wf_\w+\] · Review · ✔ reviewer · general-purpose · sonnet 4\.6 · thinking: high$/),
+      expect.stringContaining("· Review · ✔ reviewer · general-purpose · sonnet 4.6 · thinking: high"),
     );
   });
 
