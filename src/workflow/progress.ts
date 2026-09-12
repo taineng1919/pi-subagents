@@ -190,6 +190,62 @@ export function isLive(entry: WorkflowAgentEntry): boolean {
   return entry.state === "start" || entry.state === "progress";
 }
 
+/**
+ * The transitions worth announcing mid-run: started, settled, failed.
+ *
+ * A queued row is booked work rather than progress, so it has no milestone of
+ * its own — it first announces itself when a slot hands it a `startedAt`.
+ */
+export type WorkflowAgentMilestone = "running" | "done" | "error";
+
+/** The milestone an entry announces, or undefined when it announces none. */
+export function agentMilestone(entry: WorkflowAgentEntry): WorkflowAgentMilestone | undefined {
+  if (entry.state === "done") return "done";
+  if (entry.state === "error") return "error";
+  if (entry.startedAt == null) return undefined;
+  return "running";
+}
+
+/**
+ * Per-run dedupe for {@link agentMilestone}.
+ *
+ * The log is append-only and re-emits a row whenever anything about it changes
+ * — a started row is re-emitted when its effective model resolves — so keying
+ * on the index alone would either announce `running` twice or, deduped by
+ * milestone alone, hide the resolution that tells the reader which model and
+ * effort the child actually runs at. The key is therefore milestone + attempt +
+ * effective configuration: the resolution announces itself, a re-emit carrying
+ * the same configuration does not, and a user retry announces a new start.
+ */
+export class WorkflowMilestoneTracker {
+  private readonly announced = new Map<number, string>();
+
+  fresh(entries: readonly WorkflowEntry[]): { entry: WorkflowAgentEntry; milestone: WorkflowAgentMilestone }[] {
+    const fresh: { entry: WorkflowAgentEntry; milestone: WorkflowAgentMilestone }[] = [];
+    for (const entry of entries) {
+      if (entry.type !== "workflow_agent") continue;
+      const milestone = agentMilestone(entry);
+      if (milestone === undefined) continue;
+      const key = `${milestone}:${entry.attempt ?? 1}:${entry.modelId ?? ""}:${entry.thinking ?? ""}`;
+      if (this.announced.get(entry.index) === key) continue;
+      this.announced.set(entry.index, key);
+      fresh.push({ entry, milestone });
+    }
+    return fresh;
+  }
+}
+
+/**
+ * Whether the child's effective model/effort has been resolved yet.
+ *
+ * The row starts with only what the script requested; the host reports the
+ * session's real model — and the effort pi actually granted, which can be a
+ * clamp — once that session exists.
+ */
+export function isResolved(entry: WorkflowAgentEntry): boolean {
+  return entry.modelId !== undefined || entry.thinking !== undefined;
+}
+
 /** Bucket agents by phase. Returns null when no agent declared a phase. */
 function groupByPhase(
   agents: readonly WorkflowAgentEntry[],
