@@ -11,6 +11,7 @@ import {
   gerund,
   header,
   isLive,
+  isResolved,
   sizeWarning,
   stats,
   type WorkflowAgentEntry,
@@ -121,6 +122,16 @@ describe("agentMilestone", () => {
   });
 });
 
+describe("isResolved", () => {
+  it("is false until the session reports an effective model or effort", () => {
+    // The requested model is seeded on the row before anything runs; it is not
+    // the effective configuration this answers for.
+    expect(isResolved(agentEntry({ index: 0, model: "haiku" }))).toBe(false);
+    expect(isResolved(agentEntry({ index: 0, modelId: "anthropic/claude-haiku-4-5" }))).toBe(true);
+    expect(isResolved(agentEntry({ index: 0, thinking: "max" }))).toBe(true);
+  });
+});
+
 describe("WorkflowMilestoneTracker", () => {
   it("announces a queued row only when it starts", () => {
     const tracker = new WorkflowMilestoneTracker();
@@ -130,12 +141,23 @@ describe("WorkflowMilestoneTracker", () => {
     expect(tracker.fresh([{ ...base, startedAt: 6 }]).map(f => f.milestone)).toEqual(["running"]);
   });
 
-  it("does not re-announce a started row re-emitted when its model resolves", () => {
+  it("re-announces a started row once its effective configuration resolves", () => {
     const tracker = new WorkflowMilestoneTracker();
     tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 6 })]);
-    // `onResolved` re-emits the same row with the effective configuration; the
-    // model change is for the card, not a second start.
-    expect(tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 6, model: "haiku", lastProgressAt: 7 })])).toEqual([]);
+
+    // `onResolved` re-emits the row with the session's real model and effort;
+    // this update is what lets the notice say `max` instead of nothing.
+    const resolved = tracker.fresh([
+      agentEntry({ index: 0, queuedAt: 5, startedAt: 6, modelId: "opencode-go/deepseek-v4.1-flash", thinking: "max", lastProgressAt: 7 }),
+    ]);
+    expect(resolved.map(f => f.milestone)).toEqual(["running"]);
+
+    // ...and a later re-emit carrying the same configuration is not a third.
+    expect(
+      tracker.fresh([
+        agentEntry({ index: 0, queuedAt: 5, startedAt: 6, modelId: "opencode-go/deepseek-v4.1-flash", thinking: "max", lastProgressAt: 8 }),
+      ]),
+    ).toEqual([]);
   });
 
   it("announces a settlement once, however many batches carry it", () => {

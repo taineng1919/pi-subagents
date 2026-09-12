@@ -242,12 +242,20 @@ export const REPLAYED_ANNOTATION = "from resume journal";
  * The `·`-separated tail of an agent row, in the recovered order: agentType,
  * model, tokens, toolCalls, durationMs. Absent values drop out entirely rather
  * than rendering a placeholder.
+ *
+ * `thinking` is opt-in because the inline card has no slot for it, while the
+ * RPC notices must say which effort a child is running at — the model alone
+ * cannot distinguish a `max` review from a `high` one.
  */
-export function agentStatSegments(entry: WorkflowAgentEntry): string[] {
+export function agentStatSegments(entry: WorkflowAgentEntry, options?: { thinking?: boolean }): string[] {
   const parts: string[] = [];
   if (entry.agentType) parts.push(entry.agentType);
   const model = formatModel(entry);
   if (model) parts.push(model);
+  if (options?.thinking) {
+    const thinking = formatThinking(entry);
+    if (thinking) parts.push(thinking);
+  }
   if (entry.tokens) parts.push(formatCompactTokens(entry.tokens));
   if (entry.toolCalls) parts.push(`${entry.toolCalls} tool call${entry.toolCalls === 1 ? "" : "s"}`);
   if (entry.durationMs) parts.push(formatDuration(entry.durationMs));
