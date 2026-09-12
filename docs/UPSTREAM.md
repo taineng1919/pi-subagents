@@ -1,23 +1,47 @@
 # Upstream and Fork Maintenance
 
 This document is for whoever maintains this fork. It records what upstream it
-tracks, how to move it forward, and how to undo the one local patch when it
-stops being needed.
+tracks, which Git model the fork follows, and how to move it forward or undo the
+local patch.
 
 ## Upstream
 
 | | |
 |---|---|
 | Upstream repository | https://github.com/tintinweb/pi-subagents |
-| Upstream branch | `master` (the upstream default; this fork's `main` carries it) |
+| Upstream branch | `master` (the upstream default; this fork's `main` carries it plus the patch) |
 | Fork repository | https://github.com/taineng1919/pi-subagents |
-| Fork base SHA | `e955e29c51b7a6cce37e1108cd2d6c57a77e151c` |
-| Fork base description | `fix: stand down for lowercase workflow tools (#283)` — v0.19.0 + 1 upstream commit |
-| Patch branch | `feat/workflow-rpc-observability` (PR into this fork's `main`) |
+| Fork base | official tag `v0.19.0` — `4f572eaa04c09d3dbc16e4a5f13a16b295e84e14` |
+| Patch branch | `feat/workflow-rpc-observability` (PR #1, source of the patch) |
 
-`main` is a byte-for-byte copy of upstream `master` at the base SHA above. All
-fork changes live on the patch branch, never on `main`, so a rebase is a
-fast-forward of `main` plus a replay of one commit.
+### Why the base is the v0.19.0 tag
+
+Upstream `master` carried one unreleased commit past the tag when this fork was
+made: `e955e29` (`fix: stand down for lowercase workflow tools (#283)`). The
+installed package is the published 0.19.0, not that commit, and the base was
+resolved from the installed artifact rather than from `package.json`:
+
+- `npm view @tintinweb/pi-subagents@0.19.0 gitHead` reports
+  `4f572eaa04c09d3dbc16e4a5f13a16b295e84e14`, the tag commit.
+- Every `src/` file the published tarball ships (56 files) is byte-identical to
+  the tag tree; `e955e29` differs in exactly one file
+  (`src/workflow/collisions.ts`), which is the unreleased fix.
+
+The fork therefore tracks the released source it is actually installed from.
+`e955e29` is intentionally not part of the base.
+
+## Long-term model
+
+`main` carries upstream plus the local patch (mode 1):
+
+- `main` sits at the exact upstream tag and gains the patch through the PR
+  merge. Before that merge it is a byte-for-byte copy of the tag.
+- Installations pin an explicit `main` SHA (or the upstream tag before the patch
+  landed); no installation follows a floating branch.
+- The patch branch is the PR's source and may be deleted once merged; later work
+  starts from `main`.
+- Moving upstream means replaying the patch commits on top of a newer upstream:
+  rebase or merge `main` onto `upstream/master`, then re-run the checks.
 
 ## Patch purpose
 
@@ -45,19 +69,17 @@ The patch is scoped to notification only:
 | `src/ui/workflow-card.ts` | `agentStatSegments()` gains an opt-in `{ thinking: true }`; the inline card keeps the old output. |
 | `test/workflow-progress.test.ts` | Tracker and milestone unit tests. |
 | `test/workflow-rpc-notify.test.ts` | End-to-end wiring: transitions, resolution refresh, failure levels, fail-open, TUI silence. |
+| `docs/UPSTREAM.md` | This file. |
 
-## Rebase onto a newer upstream
+## Moving to a newer upstream
 
 ```sh
-git remote add upstream https://github.com/tintinweb/pi-subagents.git   # once
-git fetch upstream
+git fetch upstream --tags
 git checkout main
-git merge --ff-only upstream/master        # main stays an exact copy
-git push origin main
-git checkout feat/workflow-rpc-observability
-git rebase main                             # replay the single patch commit
+git rebase upstream/master          # or: git merge upstream/master
 npm ci
 npm run lint && npm run typecheck && npm test
+git push --force-with-lease origin main   # after a rebase; plain push after a merge
 ```
 
 Conflict guidance: the patch depends on the progress-entry shape
@@ -66,16 +88,14 @@ Conflict guidance: the patch depends on the progress-entry shape
 rather than reimplementing the notification path; the intended seam is the
 `onProgress` callback in `runWorkflowTask()`.
 
-After a rebase, update the base SHA in this file and force-push the branch
-(`git push --force-with-lease origin feat/workflow-rpc-observability`).
+Record the new tracked release (tag and SHA) in the table above when it moves.
 
 ## Rollback
 
 Disable the patch without touching upstream code:
 
-- `git revert <patch-commit>` on the branch and merge that into `main`, or
-- install this fork's `main` instead of the patch branch, or
-- switch back to the published upstream package (`npm:@tintinweb/pi-subagents`).
+- `git revert <patch commits>` on `main`, or
+- install the upstream tag/release directly instead of this fork's `main`.
 
 Reverting the patch removes notifications only; no workflow behavior changes,
 so there is no state to migrate either way.
