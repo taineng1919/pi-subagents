@@ -59,7 +59,7 @@ import {
 import { FleetList, type FleetUICtx, type FleetWorkflow } from "./ui/fleet-list.js";
 import { showSchedulesMenu } from "./ui/schedule-menu.js";
 import { selectItem } from "./ui/select-item.js";
-import { renderWorkflowCard, renderWorkflowEntryCard } from "./ui/workflow-card.js";
+import { agentStatSegments, REPLAYED_ANNOTATION, renderWorkflowCard, renderWorkflowEntryCard } from "./ui/workflow-card.js";
 import { openWorkflowFromFleet, showWorkflowsMenu, type WorkflowMenuDeps } from "./ui/workflow-menu.js";
 import { getLifetimeCost, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, PendingUsagePool, toReportedUsage } from "./usage.js";
 import { decideWorkflowCollision, FOREIGN_WORKFLOW_TOOL_NAMES } from "./workflow/collisions.js";
@@ -67,7 +67,7 @@ import { WORKFLOW_ENTRY_TYPE, type WorkflowEntryData, workflowEntryData } from "
 import { createWorkflowHost } from "./workflow/host.js";
 import { appendJournal, readJournal, type WorkflowJournalEntry } from "./workflow/journal.js";
 import { extractMeta, type WorkflowMeta, workflowCallName } from "./workflow/meta.js";
-import { elapsedMs } from "./workflow/progress.js";
+import { elapsedMs, type WorkflowAgentEntry, type WorkflowAgentMilestone, WorkflowMilestoneTracker } from "./workflow/progress.js";
 import { runWorkflow } from "./workflow/runtime.js";
 import { resolveWorkflowScript } from "./workflow/saved.js";
 import { completeWorkflowTask, createWorkflowTask, failWorkflowTask, formatWorkflowNotification, resolveResumeTarget, updateWorkflowProgressBatch, type WorkflowTask, workflowResultText, workflowRunId } from "./workflow/task.js";
@@ -2336,12 +2336,44 @@ Terse command-style prompts produce shallow, generic work.
   }
 
   /**
+   * One line per agent transition, for hosts that render `notify` frames in
+   * the thread (Paseo on the RPC channel). The interactive TUI redraws the tool
+   * card from the same log already, so announcing there would only put a toast
+   * on top of the card it duplicates.
+   *
+   * The vocabulary is the card's: `⟳` running, `✔` done, `✘` failed. The run's
+   * name leads because a notification is read outside the card it belongs to.
+   */
+  function announceWorkflowMilestone(
+    ctx: ExtensionContext,
+    task: WorkflowTask,
+    entry: WorkflowAgentEntry,
+    milestone: WorkflowAgentMilestone,
+  ): void {
+    const name = task.meta?.name ?? task.workflowName ?? task.id;
+    if (milestone === "error") {
+      const reason = entry.skipped ? "skipped" : entry.blocked ? "blocked" : entry.error ?? "failed";
+      ctx.ui.notify(`${name} · ✘ ${entry.label} · ${reason}`, entry.skipped ? "warning" : "error");
+      return;
+    }
+    if (milestone === "done") {
+      const stats = entry.cached ? [REPLAYED_ANNOTATION, ...agentStatSegments(entry)] : agentStatSegments(entry);
+      ctx.ui.notify(`${name} · ✔ ${[entry.label, ...stats].join(" · ")}`, "info");
+      return;
+    }
+    ctx.ui.notify(`${name} · ⟳ ${entry.label} running`, "info");
+  }
+
+  /**
    * Run a task to completion against the real manager, settling the record
    * either way. Never rejects: a run that cannot start (bad `meta`, oversized
    * source, non-JSON `args`) is a failed workflow, and both callers here are
    * detached — a rejection would surface as an unhandled one.
    */
   async function runWorkflowTask(ctx: ExtensionContext, task: WorkflowTask): Promise<void> {
+    // One tracker per run: it holds what has already been announced, not state
+    // the task itself needs.
+    const milestones = ctx.mode === "rpc" ? new WorkflowMilestoneTracker() : undefined;
     try {
       const result = await runWorkflow({
         script: task.script,
@@ -2355,7 +2387,14 @@ Terse command-style prompts produce shallow, generic work.
           rootSessionId: ctx.sessionManager.getSessionId(),
           workflowId: task.id,
         }),
-        onProgress: entries => updateWorkflowProgressBatch(task, entries),
+        onProgress: entries => {
+          updateWorkflowProgressBatch(task, entries);
+          if (milestones !== undefined) {
+            for (const { entry, milestone } of milestones.fresh(entries)) {
+              announceWorkflowMilestone(ctx, task, entry, milestone);
+            }
+          }
+        },
         // The dialog's pause / skip / retry keys run through this; it is dropped
         // again when the task settles.
         onControl: control => { task.control = control; },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowMeta } from "../src/workflow/meta.js";
 import {
+  agentMilestone,
   buildPhaseGroups,
   collapse,
   displayState,
@@ -14,6 +15,7 @@ import {
   stats,
   type WorkflowAgentEntry,
   type WorkflowEntry,
+  WorkflowMilestoneTracker,
 } from "../src/workflow/progress.js";
 
 /**
@@ -104,6 +106,72 @@ describe("isLive", () => {
     expect(isLive(agentEntry({ index: 0, state: "progress" }))).toBe(true);
     expect(isLive(agentEntry({ index: 0, state: "done" }))).toBe(false);
     expect(isLive(agentEntry({ index: 0, state: "error" }))).toBe(false);
+  });
+});
+
+describe("agentMilestone", () => {
+  it("reports done and error for their entries regardless of startedAt", () => {
+    expect(agentMilestone(agentEntry({ index: 0, state: "done" }))).toBe("done");
+    expect(agentMilestone(agentEntry({ index: 0, state: "error" }))).toBe("error");
+  });
+
+  it("reports running only once a slot handed the row a startedAt", () => {
+    expect(agentMilestone(agentEntry({ index: 0, state: "start", queuedAt: 5 }))).toBeUndefined();
+    expect(agentMilestone(agentEntry({ index: 0, state: "start", queuedAt: 5, startedAt: 6 }))).toBe("running");
+  });
+});
+
+describe("WorkflowMilestoneTracker", () => {
+  it("announces a queued row only when it starts", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    const base = agentEntry({ index: 0, queuedAt: 5 });
+
+    expect(tracker.fresh([base])).toEqual([]);
+    expect(tracker.fresh([{ ...base, startedAt: 6 }]).map(f => f.milestone)).toEqual(["running"]);
+  });
+
+  it("does not re-announce a started row re-emitted when its model resolves", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 6 })]);
+    // `onResolved` re-emits the same row with the effective configuration; the
+    // model change is for the card, not a second start.
+    expect(tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 6, model: "haiku", lastProgressAt: 7 })])).toEqual([]);
+  });
+
+  it("announces a settlement once, however many batches carry it", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    const done = agentEntry({ index: 0, state: "done", startedAt: 6 });
+    expect(tracker.fresh([done]).map(f => f.milestone)).toEqual(["done"]);
+    expect(tracker.fresh([done, { ...done }])).toEqual([]);
+  });
+
+  it("announces a retried row again, because a second attempt is a second start", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    tracker.fresh([agentEntry({ index: 0, state: "done", startedAt: 6, attempt: 1 })]);
+    const retry = tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 9, attempt: 2 })]);
+    expect(retry.map(f => f.milestone)).toEqual(["running"]);
+  });
+
+  it("keys attempts per row, so one agent's retry does not hide another's start", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    tracker.fresh([agentEntry({ index: 0, queuedAt: 5, startedAt: 6 })]);
+    const batch = tracker.fresh([
+      agentEntry({ index: 0, queuedAt: 5, startedAt: 6, attempt: 2 }),
+      agentEntry({ index: 1, queuedAt: 5, startedAt: 6 }),
+    ]);
+    expect(batch.map(f => [f.entry.index, f.milestone])).toEqual([
+      [0, "running"],
+      [1, "running"],
+    ]);
+  });
+
+  it("ignores phase and log entries, which carry no agent lifecycle", () => {
+    const tracker = new WorkflowMilestoneTracker();
+    const entries: WorkflowEntry[] = [
+      { type: "workflow_phase", index: 0, title: "Review" },
+      { type: "workflow_log", message: "scanning" },
+    ];
+    expect(tracker.fresh(entries)).toEqual([]);
   });
 });
 

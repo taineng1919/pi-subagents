@@ -190,6 +190,49 @@ export function isLive(entry: WorkflowAgentEntry): boolean {
   return entry.state === "start" || entry.state === "progress";
 }
 
+/**
+ * The transitions worth announcing mid-run: started, settled, failed.
+ *
+ * A queued row is booked work rather than progress, so it has no milestone of
+ * its own — it first announces itself when a slot hands it a `startedAt`.
+ */
+export type WorkflowAgentMilestone = "running" | "done" | "error";
+
+/** The milestone an entry announces, or undefined when it announces none. */
+export function agentMilestone(entry: WorkflowAgentEntry): WorkflowAgentMilestone | undefined {
+  if (entry.state === "done") return "done";
+  if (entry.state === "error") return "error";
+  if (entry.startedAt == null) return undefined;
+  return "running";
+}
+
+/**
+ * Per-run dedupe for {@link agentMilestone}.
+ *
+ * The log is append-only and re-emits a row whenever anything about it changes
+ * — a started row is re-emitted once its effective model resolves — so keying
+ * on the index alone would announce `running` twice. Keyed by milestone AND
+ * attempt, a row the user retried announces itself again, which is a real
+ * second start.
+ */
+export class WorkflowMilestoneTracker {
+  private readonly announced = new Map<number, string>();
+
+  fresh(entries: readonly WorkflowEntry[]): { entry: WorkflowAgentEntry; milestone: WorkflowAgentMilestone }[] {
+    const fresh: { entry: WorkflowAgentEntry; milestone: WorkflowAgentMilestone }[] = [];
+    for (const entry of entries) {
+      if (entry.type !== "workflow_agent") continue;
+      const milestone = agentMilestone(entry);
+      if (milestone === undefined) continue;
+      const key = `${milestone}:${entry.attempt ?? 1}`;
+      if (this.announced.get(entry.index) === key) continue;
+      this.announced.set(entry.index, key);
+      fresh.push({ entry, milestone });
+    }
+    return fresh;
+  }
+}
+
 /** Bucket agents by phase. Returns null when no agent declared a phase. */
 function groupByPhase(
   agents: readonly WorkflowAgentEntry[],
